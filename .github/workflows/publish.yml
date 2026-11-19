@@ -1,0 +1,40 @@
+name: Publish verified Android APK
+on:
+  push:
+    branches: [publish/v0.7-diagnostic]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare temporary transfer key
+        run: |
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/private.pem"
+          openssl req -new -x509 -key "$RUNNER_TEMP/private.pem" -subj /CN=release-transfer -days 1 -out public.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transfer-public-key
+          path: public.pem
+          retention-days: 1
+      - name: Verify and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          for i in $(seq 1 80); do
+            if git fetch --quiet origin refs/heads/publish/verified-transfer; then break; fi
+            sleep 6
+          done
+          git show FETCH_HEAD:transfer.enc > "$RUNNER_TEMP/transfer.enc"
+          openssl cms -decrypt -binary -inform DER -in "$RUNNER_TEMP/transfer.enc" -inkey "$RUNNER_TEMP/private.pem" -out "$RUNNER_TEMP/location"
+          url=$(cat "$RUNNER_TEMP/location")
+          curl --fail --silent --show-error --location --proto '=https' "$url" -o "$RUNNER_TEMP/build.zip"
+          cd "$RUNNER_TEMP"
+          echo '9a0ddef2f5362fd1db64a9480b9fc122b84fec4a85cb21ea5656918f6703c680  build.zip' | sha256sum -c -
+          unzip -q build.zip Minion_Catalog_v0.7_diagnostic.apk
+          echo '1b7ef55b8c3721fcf4a6e58ebc9227cf8f7b43a6cbde06718a0af8b9459052ee  Minion_Catalog_v0.7_diagnostic.apk' > SHA256.txt
+          sha256sum -c SHA256.txt
+          gh release create v0.7-diagnostic Minion_Catalog_v0.7_diagnostic.apk SHA256.txt --repo "$GITHUB_REPOSITORY" --target main --title 'Minion Catalog 0.7 — диагностическая версия для Android' --notes 'Офлайн-каталог миниатюрных бутылочек. Добавлены выбор бутылочки на фото и автозаполнение названия по размеру букв на этикетке. Распознавание поддерживает латиницу. Для установки скачайте файл APK.'
