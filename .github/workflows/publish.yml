@@ -1,0 +1,40 @@
+name: Publish verified Android APK
+on:
+  push:
+    branches: [publish/v0.8-diagnostic]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare temporary transfer key
+        run: |
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/private.pem"
+          openssl req -new -x509 -key "$RUNNER_TEMP/private.pem" -subj /CN=release-transfer -days 1 -out public.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transfer-public-key
+          path: public.pem
+          retention-days: 1
+      - name: Verify and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          for i in $(seq 1 80); do
+            if git fetch --quiet origin refs/heads/publish/transfer-v08; then break; fi
+            sleep 6
+          done
+          git show FETCH_HEAD:transfer.enc > "$RUNNER_TEMP/transfer.enc"
+          openssl cms -decrypt -binary -inform DER -in "$RUNNER_TEMP/transfer.enc" -inkey "$RUNNER_TEMP/private.pem" -out "$RUNNER_TEMP/location"
+          url=$(cat "$RUNNER_TEMP/location")
+          curl --fail --silent --show-error --location --proto '=https' "$url" -o "$RUNNER_TEMP/build.zip"
+          cd "$RUNNER_TEMP"
+          echo '0fccd08d7cec3677c43a3606365d8ac7f835f5cdd2673aac1a1004f76acc8813  build.zip' | sha256sum -c -
+          unzip -q build.zip Minion_Catalog_v0.8_diagnostic.apk
+          echo 'd6008aa24d482b8a156c9e40ca8479e619579bce5453502180b5d59353daec2b  Minion_Catalog_v0.8_diagnostic.apk' > SHA256.txt
+          sha256sum -c SHA256.txt
+          gh release create v0.8-diagnostic Minion_Catalog_v0.8_diagnostic.apk SHA256.txt --repo "$GITHUB_REPOSITORY" --target main --title 'Minion Catalog 0.8 — диагностическая версия для Android' --notes 'Офлайн-каталог миниатюрных бутылочек. Поиск учитывает название, детали этикетки и цвет, затем предлагает одну карточку для сравнения. Для установки скачайте файл APK.'
