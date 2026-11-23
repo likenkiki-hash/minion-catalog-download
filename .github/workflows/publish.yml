@@ -1,0 +1,40 @@
+name: Publish verified Android APK
+on:
+  push:
+    branches: [publish/v0.9.6-diagnostic]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare temporary transfer key
+        run: |
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/private.pem"
+          openssl req -new -x509 -key "$RUNNER_TEMP/private.pem" -subj /CN=release-transfer -days 1 -out public.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transfer-public-key
+          path: public.pem
+          retention-days: 1
+      - name: Verify and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          for i in $(seq 1 80); do
+            if git fetch --quiet origin refs/heads/publish/transfer-v096 && git cat-file -e FETCH_HEAD:transfer.b64; then break; fi
+            sleep 6
+          done
+          git show FETCH_HEAD:transfer.b64 | base64 -d > "$RUNNER_TEMP/transfer.enc"
+          openssl cms -decrypt -binary -inform DER -in "$RUNNER_TEMP/transfer.enc" -inkey "$RUNNER_TEMP/private.pem" -out "$RUNNER_TEMP/location"
+          url=$(cat "$RUNNER_TEMP/location")
+          curl --fail --silent --show-error --location --proto '=https' "$url" -o "$RUNNER_TEMP/build.zip"
+          cd "$RUNNER_TEMP"
+          echo '1e32349038710b65e000b270747308073f6ce00c211f3539adeb5c1fa2006820  build.zip' | sha256sum -c -
+          unzip -q build.zip Minion_Catalog_v0.9.6_diagnostic.apk
+          echo '5af4857ff04f9ff96896d9a00b13b42d95f538c25a30a3ef3905a3de9af081f6  Minion_Catalog_v0.9.6_diagnostic.apk' > SHA256.txt
+          sha256sum -c SHA256.txt
+          gh release create v0.9.6-diagnostic Minion_Catalog_v0.9.6_diagnostic.apk SHA256.txt --repo "$GITHUB_REPOSITORY" --target main --title 'Minion Catalog 0.9.6 — диагностическая версия для Android' --notes 'Серийная съёмка шести ракурсов при добавлении карточки. Перед переустановкой сохраните резервную копию коллекции.'
