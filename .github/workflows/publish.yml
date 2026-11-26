@@ -1,0 +1,41 @@
+name: Publish verified Android 0.9.7
+on:
+  push:
+    branches: [publish/v0.9.7-diagnostic]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Request verified build
+        run: |
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/private.pem"
+          openssl req -new -x509 -key "$RUNNER_TEMP/private.pem" -subj /CN=release-transfer -days 1 -out public.pem
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add public.pem
+          git commit -m 'Expose temporary transfer certificate'
+          git push origin HEAD:refs/heads/publish/transfer-v097
+      - name: Verify and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          for i in $(seq 1 120); do
+            git fetch -q origin refs/heads/publish/transfer-v097
+            if git cat-file -e FETCH_HEAD:transfer.b64 2>/dev/null; then break; fi
+            sleep 5
+          done
+          git show FETCH_HEAD:transfer.b64 | base64 -d > "$RUNNER_TEMP/transfer.enc"
+          openssl cms -decrypt -binary -inform DER -in "$RUNNER_TEMP/transfer.enc" -inkey "$RUNNER_TEMP/private.pem" -out "$RUNNER_TEMP/location"
+          cd "$RUNNER_TEMP"
+          curl -fsSL --proto '=https' "$(cat location)" -o build.zip
+          echo 'db95a3597e50e8ba540740b7d5280f111b399452942ef68bf5eb4804e7390960  build.zip' | sha256sum -c -
+          unzip -q build.zip Minion_Catalog_v0.9.7_diagnostic.apk SHA256.txt
+          sha256sum -c SHA256.txt
+          gh release create v0.9.7-diagnostic Minion_Catalog_v0.9.7_diagnostic.apk SHA256.txt --repo "$GITHUB_REPOSITORY" --target main --title 'Мои миньоны 0.9.7' --notes 'Локальный индекс для ускорения повторных поисков. При переходе с диагностической версии предварительно сохраните резервную копию коллекции.'
